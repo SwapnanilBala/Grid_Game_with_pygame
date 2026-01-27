@@ -75,24 +75,28 @@ start = time.time()  # <- do not modify this.
 # and perform random restarts (undo all placed shapes) if stuck.
 # This keeps the method fundamentally first-choice hill climbing, but improves reliability.
 
-import random
+import random # importing the random module
 
-# Pull the latest state
+# Here we are Pulling the latest state of the entire board
+
 shapePos, currentShapeIndex, currentColorIndex, grid, placedShapes, done = game.execute('export')
 
-GS = grid.shape[0]
-NUM_SHAPES = len(game.shapes)          # 9 shapes in gridgame.py :contentReference[oaicite:6]{index=6}
-NUM_COLORS = len(game.colors)          # 4 colors (default) :contentReference[oaicite:7]{index=7}
+# Below are our environment constants
 
-#  Scoring (lower is better)
+GS = grid.shape[0]             # This is our shape of the grid (n X n), where n can be changed
+NUM_SHAPES = len(game.shapes)  # number of brushes we have available, presently we have 9
+NUM_COLORS = len(game.colors)  # As the name suggests, this represents the number of colors available as of now we have 4 colors
+
+#  Scoring (lower is better) -> is a variable (tracker)
+#  The idea is to keep a track of a variable that lets the agent know how good or bad it's last move was
 
 def count_conflicts(g: np.ndarray) -> int:
-    """Count orthogonal adjacent equal-color pairs (ignore -1). Count each pair once."""
-    c = 0
+    """ This is to count the orthogonal adjacent equal-color pairs (ignore -1). Count each pair once."""
+    c = 0 # Conflict counter
     n = g.shape[0]
     for y in range(n): # so y is basically the row index
         for x in range(n): # and x is the column index
-            col = g[y, x]
+            col = g[y, x] # This is the color value of the current cell
             if col == -1: # -1 means no color, that's a relief now we are checking the horizontal and the vertical grids which are adjacent to that
                 continue
             if x + 1 < n and g[y, x + 1] == col:
@@ -104,85 +108,88 @@ def count_conflicts(g: np.ndarray) -> int:
 def objective(g: np.ndarray, shapes_used: int) -> int:
     conflicts = count_conflicts(g) # counts the number of conflicts we have for the grid if it's 0 then its legal otherwise its illegal
     empty = int(np.sum(g == -1)) # so g == -1 creates a boolean grid then tells us how many empty cells are in the grid
-    used_colors = set(int(v) for v in np.unique(g) if v != -1) # returns the unique color numeric indicators -1 means it's empty
-    num_colors_used = len(used_colors) # tells us how many colors are currently being used
+    used_colors = set(int(v) for v in np.unique(g) if v != -1) # returns the unique color numeric indicators; -1 means it's empty
+    num_colors_used = len(used_colors) # tells us about the number of distinct colors that are currently being used
 
-    # Weighting: correctness >> completion >> colors >> shapes, this is what our agent will get taste, for conflict the highest increment is score which is something we are trying to minimize with each step
-    return (100000 * conflicts) + (1000 * empty) + (10 * num_colors_used) + shapes_used
+    # (This acts like a priority order) Weighting: correctness > completion > colors > shapes, this is what our agent will get taste, for conflict the highest increment is score which is something we are trying to minimize with each step
+    return (100000 * conflicts) + (1000 * empty) + (10 * num_colors_used) + shapes_used # This is the score the agent is supposed to decrease
     # so basically this is our priority queue: correctness over everything, then when we don't have many conflicts otherwise they are quite low, the agent will put emphasis on filing the grid
     # now comes the coloring, so with num_color_used we are telling the agent that this is the third important thing meaning if the above two seem fine then you can try to minimize the color options
-    # lastly we have the least penalty for the shapes, but we still are trying to use as fewer variations of the shapes as possible
+    # lastly we have the least penalty for the shapes, but we still prefer fewer total placements (fewer 'place' actions)
 
 
-#  Helpers to simulate placement (without altering environment)
+
+#  Below are our agent's helpers who are to simulate placement (without making any alterations to the environment)
 
 def apply_shape_to_copy(g: np.ndarray, shape_idx: int, pos_xy: tuple[int, int], color_idx: int) -> np.ndarray:
-    """Return new grid after applying a shape at pos (x,y). Assumes placement is legal."""
+    """This special function simulate placing a shape on a COPY of the grid (no execute calls); also assumes the placement is already legal."""
     x0, y0 = pos_xy # these stand for the column start and row start
     newg = g.copy() # this is the copy of the updated grid so far on which we will visualize our implementation
     shape = game.shapes[shape_idx] # get us the shape we are currently using
     for i, row in enumerate(shape): # `i` is basically the row inside the shape
         for j, cell in enumerate(row): # and conversely j is the column indicator inside the shape
-            if cell:
-                newg[y0 + i, x0 + j] = color_idx # newg[y0 + i, x0 + j] is our affected grid within the visualization
-    return newg
+            if cell: # for this True equivalent means this part of the brush covers a particular grid and conversely False represents blank space
+                newg[y0 + i, x0 + j] = color_idx # newg[y0 + i, x0 + j] is our affected grid within the visualization, color_idx -> which color we are using for this
+    return newg # This one returns our simulated board
 
 def random_empty_cell(g: np.ndarray) -> tuple[int, int] | None:
-    empties = np.argwhere(g == -1) # here we are creating a boolean grid and then returning the indices where it's True
-    if len(empties) == 0:
+    empties = np.argwhere(g == -1) # here we are creating a boolean grid and then returning the indices where it's True, basically checking which cells are empty and which ones are not
+    if len(empties) == 0: # No empty cells
         return None
     y, x = empties[random.randrange(len(empties))] # this gives us one random coordinate pair for the corresponding grid
-    return int(x), int(y) # this conversion is done for a purpose that serves later
+    # So numpy gives us (row,col) = (y,x), and not (x,y)
+    return int(x), int(y) # we have converted the dtype for a safer parameter dtype handling and also as our code expects (x,y) we flip the order
 
 def candidate_positions_covering_anchor(shape_idx: int, anchor_xy: tuple[int, int]) -> list[tuple[int, int]]:
-    """All top-left positions (x,y) where shape covers anchor cell on a '1' cell."""
-    ax, ay = anchor_xy
+    """ We can think of this function as (how come the brush covers some empty cell) """
+    ax, ay = anchor_xy # this is the empty cell that we wish to fill with some color
     shape = game.shapes[shape_idx] # the shape indicating which grids will be painted
-    positions = []
+    positions = [] # creating an empty list which will later hold a set of valid placement options
     # with this basically we are taking our brush to the anchor (empty grid that needs coloring)
-    for i, row in enumerate(shape):
-        for j, cell in enumerate(row):
-            if cell: # i and j stand for the row and column index inside the shape
+    for i, row in enumerate(shape): # row index inside targeted shape
+        for j, cell in enumerate(row): # column index inside targeted shape
+            if cell: # This tells us that if a cell is true then the brush can do it's magic there if not then that part won't get colored
                 x0 = ax - j
                 y0 = ay - i
                 if x0 < 0 or y0 < 0: # if the position is out of bound meaning if we have moved out from the whole grid
                     continue
-                # canPlace expects (grid, shape_array, pos_list[x,y]) and checks overlap/fit only :contentReference[oaicite:8]{index=8}
-                if game.canPlace(grid, shape, [x0, y0]):
-                    positions.append((x0, y0))
+
+                if game.canPlace(grid, shape, [x0, y0]): # This lets us only keep placements which are valid (in-bounds (no out of bounds error) + no overlap with already-colored cells/grids)
+                    positions.append((x0, y0)) # adding up the valid placement options into the positions
     return positions # this returns a set of valid placement options, so that from here we can simulate the rest
 
 def choose_color_for_shape(g: np.ndarray, shape_idx: int, pos_xy: tuple[int, int]) -> int:
     # We have the inputs: g: this is the current grid, shape_idx is the corresponding index of the shape
     # pos_xy starting point from where the coloring will start
     """
-    Pick a color that tends to reduce conflicts.
-    We try a few candidates (including getAvailableColor suggestions) and take best by objective.
+    With this we pick a color that aims to reduce conflicts.
+    And so, We try a few candidates (including getAvailableColor suggestions) and take best by objective (least score).
     """
     # Start with a few random colors + a couple 'available' colors from covered cells
     candidate_colors = set(random.randrange(NUM_COLORS) for _ in range(2))
     # only going with 2 random colors, and the use of set is to avoid duplicates
-    shape = game.shapes[shape_idx] # it's our 2D mask,
+    shape = game.shapes[shape_idx] # it's our 2D mask, 1 -> will paint a grid, 0 -> will do nothing
     x0, y0 = pos_xy # position of the anchor
-    covered_cells = []
+    covered_cells = [] # this is the initiation of the list that will later become a list of board grids which would be painted if we placed that particular shape here
 
-    for i, row in enumerate(shape):
+    for i, row in enumerate(shape): # i -> row index, j -> column index
         for j, cell in enumerate(row):
-            if cell:
+            if cell: # similarly, this tells us about the grids that the shape has it's effect on
                 covered_cells.append((x0 + j, y0 + i))
                 # This is how we basically convert the cells into a grid coordinate and store it into covered_cell, and
                 # this is essentially the list of all board coordinates the shape is intended to fill when place here
-    # Use professor-provided helper (returns a random non-adjacent color for a single cell) :contentReference[oaicite:9]{index=9}
+
 
     for (cx, cy) in covered_cells[:2]:
-        # Fast heuristic: We sample only a couple covered cells to get "safe color" suggestions
+        # Fast heuristic: We sample only a couple covered cells(first 2 covered cells/grids) to get "safe color" suggestions
         # safer color implies: We need not require evaluating all 4 colors for every candidate move; usually 2–4 smart picks are enough to find a good one, and it keeps the search fast.
 #       # (calling getAvailableColor for every covered cell is comparatively slower and generally unnecessary).
         candidate_colors.add(int(game.getAvailableColor(g, cx, cy)))
         # This delivers us a color that is not adjacent-conflict for that one cell, color options have been mentioned above
 
-    best_color = 0
-    best_score = 10**18
+    best_color = 0 # it's like a default option
+    best_score = 10**18 # We start with a huge value so the first objective() score that we compute, will replace it (as we're trying to minimize it)
+
     for c in candidate_colors:
         newg = apply_shape_to_copy(g, shape_idx, pos_xy, c)
         # This is our MVP which fabricates a copy of the grid and paints the shape on it using color c
@@ -206,7 +213,7 @@ def exec_cmd(cmd: str):
     # the variables above are global, and we update them everywhere
 
 def set_shape(target_idx: int):
-    # Cycle forward using 'switchshape'/'h' :contentReference[oaicite:10]{index=10}
+    # Cycle forward using 'switchshape' -> This is found in the gridgame.py
     global currentShapeIndex
     steps = (target_idx - currentShapeIndex) % NUM_SHAPES
     for _ in range(steps):
@@ -214,7 +221,7 @@ def set_shape(target_idx: int):
         # basically, to reach a specific shape index, we repeatedly cycle forward until we eventually land on it.
 
 def set_color(target_idx: int):
-    # Cycle forward using 'switchcolor'/'k' :contentReference[oaicite:11]{index=11}
+    # Cycle forward using 'switchcolor' -> imported from gridgame.py
     global currentColorIndex
     steps = (target_idx - currentColorIndex) % NUM_COLORS
     for _ in range(steps):
@@ -222,16 +229,16 @@ def set_color(target_idx: int):
         # essentially we have implemented the same methodology
 
 def goto_pos(target_xy: tuple[int, int]):
-    """Move brush to (x,y). Note: movement boundaries depend on current shape size."""
+    """ Move brush to (x,y). and also the move depends on the shape and size of the brush """
     tx, ty = target_xy
     while shapePos[0] < tx:
-        exec_cmd('right')
+        exec_cmd('right') # go rightward
     while shapePos[0] > tx:
-        exec_cmd('left')
+        exec_cmd('left') # go leftward
     while shapePos[1] < ty:
-        exec_cmd('down')
+        exec_cmd('down') # go downward
     while shapePos[1] > ty:
-        exec_cmd('up')
+        exec_cmd('up') # go upward
     # This one is quite self-explanatory, the comparison is done to prevent shape pos out of bounds error
 
 def place_current():
@@ -246,16 +253,19 @@ def restart_to_initial():
     # if after a certain time and certain moves the grid situation doesn't seem to improve a lot,
     # Undo everything we placed (initial random colored cells are not in placedShapes).
     while len(placedShapes) > 0:
-        undo_one()
+        undo_one() # placedShapes is a list; undo until it's empty to return to the initial state
 
-# --- Hill climbing loop ---
-random.seed(0)
+
+#  The Hill climbing loop and setting up the parameters
+
+random.seed(42)
 
 # Limits (keep safe for autograder 10 min; you can tune)
-TIME_BUDGET_SEC = 5 * 60
-MAX_PLATEAU_SIDEWAYS = 250      # allow equal-score moves up to this many
-MAX_TRIES_PER_STEP = 300        # how many random neighbors to sample before declaring "stuck"
-MAX_RESTARTS = 50
+
+TIME_BUDGET_SEC = 2 * 60        # 2 mins tops, since the autograder will run 3 times, so each iteration must finish within 2 mins
+MAX_PLATEAU_SIDEWAYS = 150      # allow equal-score moves up to this many
+MAX_TRIES_PER_STEP = 175        # the counter for how many random neighbors to sample before declaring "stuck" and we need to move
+MAX_RESTARTS = 5               # number of restarts allowed, before we drop everything
 
 best_grid = grid.copy() # saves the best board state found so far
 best_shapes = list(placedShapes) # this saves the sequence of placed shapes corresponding to that best grid
@@ -268,9 +278,19 @@ while (time.time() - start) < TIME_BUDGET_SEC:
     # Refresh state
     exec_cmd('export')
     if done:
+        used_colors = {int(v) for v in np.unique(grid) if v != -1}
+        unique_shape_types = len({sidx for (sidx, _, _) in placedShapes})
+        print("t=", int(time.time() - start),
+              "colors used =", len(used_colors),
+              "Times we placed a brush on the board =", len(placedShapes),
+              "Unique shapes used =", unique_shape_types,
+              "placed=", len(placedShapes),
+              "score=", objective(grid, shapes_used=len(placedShapes)),
+              "restarts=", restarts,
+              "  DONE =", done)
         break # if the board has been fully colored then we break out of the loop
 
-        #  Just to check that our program is running or not
+        #  Just to check that our program is running or not print once every 5 seconds so we don't feel not knowing whether the agent is doing something or not
     if int(time.time() - start) % 5 == 0:
         print("t=", int(time.time() - start),
                 "placed=", len(placedShapes),
@@ -349,7 +369,7 @@ while (time.time() - start) < TIME_BUDGET_SEC:
 exec_cmd('export')
 
 # If we didn't finish, revert to best-so-far (by undoing and replaying best_shapes)
-# (Optional safety to avoid ending in a worse restart state.)
+# (This is our special move: safety to avoid ending in a worse restart state.)
 if not done and best_score < objective(grid, shapes_used=len(placedShapes)):
     restart_to_initial()
     # Replay best shapes through execute (still legal since it was achieved earlier)
